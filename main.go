@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	"log"
 
 	"go.opentelemetry.io/otel"
@@ -33,6 +35,11 @@ func createAndRegisterExporters() error {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(stdExporter),
 		sdktrace.WithSyncer(jaegerExporter),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String(serviceName),
+		),
+		),
 	)
 
 	otel.SetTracerProvider(tp)
