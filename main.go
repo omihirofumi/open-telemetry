@@ -2,10 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
+	"go.opentelemetry.io/otel/trace"
 	"log"
+	"net/http"
+	"strconv"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -14,7 +20,7 @@ import (
 
 const (
 	jaegerEndpoint = "http://localhost:14268/api/traces"
-	serviceName    = "anonymous"
+	serviceName    = "fibonacci"
 )
 
 func createAndRegisterExporters() error {
@@ -53,16 +59,57 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tr := otel.GetTracerProvider().Tracer(serviceName)
+	http.Handle("/", otelhttp.NewHandler(http.HandlerFunc(fibHandler), "root"))
 
-	ctx, sp := tr.Start(context.Background(), "main")
-	defer sp.End()
-
-	Foo(ctx)
+	log.Fatal(http.ListenAndServe(":3000", nil))
 }
 
-func Foo(ctx context.Context) {
-	tr := otel.GetTracerProvider().Tracer(serviceName)
-	_, sp := tr.Start(ctx, "Foo")
-	defer sp.End()
+func fibHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
+	var n int
+
+	if len(r.URL.Query()["n"]) != 1 {
+		err = fmt.Errorf("wrong number of args")
+	} else {
+		n, err = strconv.Atoi(r.URL.Query()["n"][0])
+	}
+
+	if err != nil {
+		http.Error(w, "couldn't parse index n", 400)
+		return
+	}
+
+	ctx := r.Context()
+
+	result := <-Fibonacci(ctx, n)
+
+	sp := trace.SpanFromContext(ctx)
+	sp.SetAttributes(attribute.Key("parameter").Int(n), attribute.Key("result").Int(result))
+
+	fmt.Fprintln(w, result)
+}
+
+func Fibonacci(ctx context.Context, n int) chan int {
+	ch := make(chan int)
+
+	go func() {
+		tr := otel.GetTracerProvider().Tracer(serviceName)
+
+		cctx, sp := tr.Start(ctx,
+			fmt.Sprintf("Fibonacci(%d)", n),
+			trace.WithAttributes(attribute.Key("n").Int(n)))
+		defer sp.End()
+
+		result := 1
+		if n > 1 {
+			a := Fibonacci(cctx, n-1)
+			b := Fibonacci(cctx, n-2)
+			result = <-a + <-b
+		}
+
+		sp.SetAttributes(attribute.Key("result").Int(result))
+
+		ch <- result
+	}()
+	return ch
 }
